@@ -1,0 +1,97 @@
+import numpy as np
+
+def mul(x, y):
+    """ Вычисляет операцию умножения в поле Галуа 2^16 """
+    if x == 0:
+        x = 0x10000
+    if y == 0:
+        y = 0x10000
+    p = x * y
+    p_mod = p & 0xFFFF
+    p_div = p >> 16
+    return (p_mod - p_div) if p_mod < p_div else (p_mod - p_div + 0x10000)
+
+def inv(x):
+    """ Вычисляет обратный элемент в поле Галуа 2^16 """
+    if x <= 1:
+        return x
+    y = 0x10001
+    t0, t1 = 1, 0
+    while True:
+        t0, t1 = t1, t0 - t1 * (y // x)
+        y = y % x
+        if y == 1:
+            return (1 - t1) & 0xFFFF
+        if y == 0:
+            raise ZeroDivisionError('division by zero')
+
+def add(x, y):
+    """ Выполняет операцию сложения в поле Галуа 2^16 """
+    return (x + y) & 0xFFFF
+
+def generate_subkeys(key):
+    """ Генерирует 52 подключа из ключа длиной 128 бит """
+    key = np.frombuffer(key, dtype=np.uint16)
+    if key.size != 8:
+        raise ValueError('key must be 128 bits long')
+    subkeys = np.zeros(52, dtype=np.uint16)
+    for i in range(8):
+        subkeys[i] = key[i]
+    for i in range(8, 52):
+        if i % 8 == 0:
+            subkeys[i] = add(subkeys[i-8], 1)
+        elif i % 8 == 7:
+            subkeys[i] = add(subkeys[i-8], 0xFFFF)
+        else:
+            subkeys[i] = add(subkeys[i-8], 0)
+    return subkeys
+
+def idea_encrypt_block(block, key):
+    """ Шифрует блок длиной 128 бит с использованием ключа """
+    subkeys = generate_subkeys(key)
+    block = np.frombuffer(block, dtype=np.uint16)
+    if block.size != 8:
+        raise ValueError('block must be 128 bits long')
+    x1, x2, x3, x4 = np.split(block, 4)
+    for i in range(8):
+        x1 = mul(x1, subkeys[i*6])
+        x2 = add(x2, subkeys[i*6 + 1])
+        x3 = add(x3, subkeys[i*6 + 2])
+        x4 = mul(x4, subkeys[i*6 + 3])
+        t = mul(x1 ^ x3, subkeys[i*6 + 4])
+        u = mul(add(x2, x4), subkeys[i*6 + 5])
+        y1 = x1 ^ u
+        y2 = x3 ^ u
+        y3 = x2 ^ t
+        y4 = x4 ^ t
+        x1, x2, x3, x4 = y1, y3, y2, y4
+    result = np.empty(8, dtype=np.uint16)
+    result[0], result[1], result[2], result[3] = x1, x2, x3, x4
+    result[4], result[5], result[6], result[7] = mul(x1, subkeys[48]), add(x3, subkeys[49]), add(x2, subkeys[50]), mul(x4, subkeys[51])
+    return result.tobytes()
+
+def idea_decrypt_block(block, key):
+    """ Дешифрует блок длиной 128 бит с использованием ключа """
+    subkeys = generate_subkeys(key)
+    block = np.frombuffer(block, dtype=np.uint16)
+    if block.size != 8:
+        raise ValueError('block must be 128 bits long')
+    x1, x2, x3, x4 = np.split(block, 4)
+    x1 = mul(x1, subkeys[48])
+    x2 = add(x2, subkeys[50])
+    x3 = add(x3, subkeys[49])
+    x4 = mul(x4, subkeys[51])
+    for i in range(7, -1, -1):
+        y1 = mul(x1, inv(subkeys[i*6]))
+        y2 = add(x3, inv(subkeys[i*6 + 1]))
+        y3 = add(x2, inv(subkeys[i*6 + 2]))
+        y4 = mul(x4, inv(subkeys[i*6 + 3]))
+        t = mul(y1 ^ y3, inv(subkeys[i*6 + 4]))
+        u = mul(add(y2, y4), inv(subkeys[i*6 + 5]))
+        x1 = y1 ^ u
+        x2 = y4 ^ t
+        x3 = y3 ^ u
+        x4 = y2 ^ t
+    result = np.empty(8, dtype=np.uint16)
+    result[0], result[1], result[2], result[3] = x1, x2, x3, x4
+    return result.tobytes()
