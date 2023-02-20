@@ -1,97 +1,120 @@
-import numpy as np
-
-def mul(x, y):
-    """ Вычисляет операцию умножения в поле Галуа 2^16 """
-    if x == 0:
-        x = 0x10000
-    if y == 0:
-        y = 0x10000
-    p = x * y
-    p_mod = p & 0xFFFF
-    p_div = p >> 16
-    return (p_mod - p_div) if p_mod < p_div else (p_mod - p_div + 0x10000)
-
-def inv(x):
-    """ Вычисляет обратный элемент в поле Галуа 2^16 """
-    if x <= 1:
-        return x
-    y = 0x10001
-    t0, t1 = 1, 0
-    while True:
-        t0, t1 = t1, t0 - t1 * (y // x)
-        y = y % x
-        if y == 1:
-            return (1 - t1) & 0xFFFF
-        if y == 0:
-            raise ZeroDivisionError('division by zero')
-
-def add(x, y):
-    """ Выполняет операцию сложения в поле Галуа 2^16 """
-    return (x + y) & 0xFFFF
-
-def generate_subkeys(key):
-    """ Генерирует 52 подключа из ключа длиной 128 бит """
-    key = np.frombuffer(key, dtype=np.uint16)
-    if key.size != 8:
-        raise ValueError('key must be 128 bits long')
-    subkeys = np.zeros(52, dtype=np.uint16)
-    for i in range(8):
-        subkeys[i] = key[i]
-    for i in range(8, 52):
-        if i % 8 == 0:
-            subkeys[i] = add(subkeys[i-8], 1)
-        elif i % 8 == 7:
-            subkeys[i] = add(subkeys[i-8], 0xFFFF)
+def idea_encrypt(key, plaintext):
+    def mul(a, b):
+        if a == 0:
+            a = 0x10001 - b
+        elif b == 0:
+            a = 0x10001 - a
         else:
-            subkeys[i] = add(subkeys[i-8], 0)
-    return subkeys
+            t = a * b
+            b = t & 0xFFFF
+            a = (t >> 16) & 0xFFFF
+            a = (a - b) + (1 if a < b else 0)
+        return a & 0xFFFF
 
-def idea_encrypt_block(block, key):
-    """ Шифрует блок длиной 128 бит с использованием ключа """
-    subkeys = generate_subkeys(key)
-    block = np.frombuffer(block, dtype=np.uint16)
-    if block.size != 8:
-        raise ValueError('block must be 128 bits long')
-    x1, x2, x3, x4 = np.split(block, 4)
-    for i in range(8):
-        x1 = mul(x1, subkeys[i*6])
-        x2 = add(x2, subkeys[i*6 + 1])
-        x3 = add(x3, subkeys[i*6 + 2])
-        x4 = mul(x4, subkeys[i*6 + 3])
-        t = mul(x1 ^ x3, subkeys[i*6 + 4])
-        u = mul(add(x2, x4), subkeys[i*6 + 5])
-        y1 = x1 ^ u
-        y2 = x3 ^ u
-        y3 = x2 ^ t
-        y4 = x4 ^ t
-        x1, x2, x3, x4 = y1, y3, y2, y4
-    result = np.empty(8, dtype=np.uint16)
-    result[0], result[1], result[2], result[3] = x1, x2, x3, x4
-    result[4], result[5], result[6], result[7] = mul(x1, subkeys[48]), add(x3, subkeys[49]), add(x2, subkeys[50]), mul(x4, subkeys[51])
-    return result.tobytes()
+    def key_schedule(key):
+        key = key + b'\x00' * (16 - len(key))
+        key_words = [int.from_bytes(key[i:i + 2], 'big') for i in range(0, 16, 2)]
+        for i in range(8, 52):
+            if i % 8 == 0:
+                key_words = key_words[1:] + [key_words[0]]
+            elif i % 8 == 6:
+                key_words = key_words[:4] + key_words[5:] + [key_words[4]]
+            elif i % 8 == 7:
+                key_words = key_words[3:] + key_words[:3]
+            key_words.append((key_words[-8] ^ key_words[-5] ^ key_words[-3] ^ key_words[-1] ^ 0x9E37) & 0xFFFF)
+        return key_words
 
-def idea_decrypt_block(block, key):
-    """ Дешифрует блок длиной 128 бит с использованием ключа """
-    subkeys = generate_subkeys(key)
-    block = np.frombuffer(block, dtype=np.uint16)
-    if block.size != 8:
-        raise ValueError('block must be 128 bits long')
-    x1, x2, x3, x4 = np.split(block, 4)
-    x1 = mul(x1, subkeys[48])
-    x2 = add(x2, subkeys[50])
-    x3 = add(x3, subkeys[49])
-    x4 = mul(x4, subkeys[51])
-    for i in range(7, -1, -1):
-        y1 = mul(x1, inv(subkeys[i*6]))
-        y2 = add(x3, inv(subkeys[i*6 + 1]))
-        y3 = add(x2, inv(subkeys[i*6 + 2]))
-        y4 = mul(x4, inv(subkeys[i*6 + 3]))
-        t = mul(y1 ^ y3, inv(subkeys[i*6 + 4]))
-        u = mul(add(y2, y4), inv(subkeys[i*6 + 5]))
-        x1 = y1 ^ u
-        x2 = y4 ^ t
-        x3 = y3 ^ u
-        x4 = y2 ^ t
-    result = np.empty(8, dtype=np.uint16)
-    result[0], result[1], result[2], result[3] = x1, x2, x3, x4
-    return result.tobytes()
+    key_words = key_schedule(key)
+    plaintext = plaintext + b'\x00' * (-len(plaintext) % 16)
+    ciphertext = bytearray()
+    for i in range(0, len(plaintext), 16):
+        x = int.from_bytes(plaintext[i:i + 2], 'big')
+        y = int.from_bytes(plaintext[i + 2:i + 4], 'big')
+        z = int.from_bytes(plaintext[i + 4:i + 6], 'big')
+        w = int.from_bytes(plaintext[i + 6:i + 8], 'big')
+        for j in range(8):
+            x = mul(x, key_words[j * 6])
+            y = (y + key_words[j * 6 + 1]) & 0xFFFF
+            z = (z + key_words[j * 6 + 2]) & 0xFFFF
+            w = mul(w, key_words[j * 6 + 3])
+            t = mul(y ^ z, key_words[j * 6 + 4])
+            u = (t + mul(0xFFFF - x, key_words[j * 6 + 5])) & 0xFFFF
+            v = (t + u) & 0xFFFF
+            x = x ^ v
+            y = y ^ u
+            z = z ^ v
+            w = w ^ u
+            y, z = z, y
+        x = mul(x, key_words[48])
+        y = (y + key_words[49]) & 0xFFFF
+        z = (z + key_words[50]) & 0xFFFF
+        w = mul(w, key_words[51])
+        ciphertext += x.to_bytes(2, 'big') + y.to_bytes(2, 'big') + z.to_bytes(2, 'big') + w.to_bytes(2, 'big')
+    return ciphertext
+def idea_decrypt(key, ciphertext):
+    def mul(a, b):
+        if a == 0:
+            a = 0x10001 - b
+        elif b == 0:
+            a = 0x10001 - a
+        else:
+            t = a * b
+            b = t & 0xFFFF
+            a = (t >> 16) & 0xFFFF
+            a = (a - b) + (1 if a < b else 0)
+        return a & 0xFFFF
+
+    def key_schedule(key):
+        key = key + b'\x00' * (16 - len(key))
+        key_words = [int.from_bytes(key[i:i+2], 'big') for i in range(0, 16, 2)]
+        for i in range(8, 52):
+            if i % 8 == 0:
+                key_words = key_words[1:] + [key_words[0]]
+            elif i % 8 == 6:
+                key_words = key_words[:4] + key_words[5:] + [key_words[4]]
+            elif i % 8 == 7:
+                key_words = key_words[3:] + key_words[:3]
+            key_words.append((key_words[-8] ^ key_words[-5] ^ key_words[-3] ^ key_words[-1] ^ 0x9E37) & 0xFFFF)
+        return key_words
+
+    key_words = key_schedule(key)
+    plaintext = bytearray()
+    for i in range(0, len(ciphertext), 16):
+        x = int.from_bytes(ciphertext[i:i+2], 'big')
+        y = int.from_bytes(ciphertext[i+2:i+4], 'big')
+        z = int.from_bytes(ciphertext[i+4:i+6], 'big')
+        w = int.from_bytes(ciphertext[i+6:i+8], 'big')
+        for j in range(8):
+            x = mul(x, key_words[51-j*6])
+            y = (y - key_words[50-j*6]) & 0xFFFF
+            z = (z - key_words[49-j*6]) & 0xFFFF
+            w = mul(w, key_words[48-j*6])
+            t = mul(y ^ z, key_words[47-j*6])
+            u = (t + mul(0xFFFF - x, key_words[46-j*6])) & 0xFFFF
+            v = (t + u) & 0xFFFF
+            x = x ^ v
+            y = y ^ u
+            z = z ^ v
+            w = w ^ u
+            y, z = z, y
+        x = mul(x, key_words[0])
+        y = (y - key_words[1]) & 0xFFFF
+        z = (z - key_words[2]) & 0xFFFF
+        w = mul(w, key_words[3])
+        plaintext += x.to_bytes(2, 'big') + y.to_bytes(2, 'big') + z.to_bytes(2, 'big') + w.to_bytes(2, 'big')
+    return plaintext.rstrip(b'\x00')
+
+
+
+
+
+key = b'\x01\x23\x45\x67\x89\xAB\xCD\xEF\x01\x23\x45\x67\x89\xAB\xCD\xEF'
+plaintext = b'Hello, world! This is a test message.'
+
+# encrypt the plaintext
+ciphertext = idea_encrypt(key, plaintext)
+print("Ciphertext:", ciphertext.hex())
+
+# decrypt the ciphertext using the same key
+decrypted_text = idea_decrypt(ciphertext, key)
+print("Decrypted plaintext:", decrypted_text.hex())
