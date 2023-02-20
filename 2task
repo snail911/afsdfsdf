@@ -1,0 +1,54 @@
+def IDEA_hash(message):
+    def mul(a, b):
+        if a == 0:
+            a = 0x10001 - b
+        elif b == 0:
+            a = 0x10001 - a
+        else:
+            p = a * b
+            b = p & 0xFFFF
+            a = p >> 16
+            a = (a - b) + ((a - b) >> 16)
+        return a & 0xFFFF
+
+    def encrypt_block(block):
+        x1, x2, x3, x4 = block
+        for round in range(8):
+            x1 = mul(x1, 0x0101)
+            x2 += 1
+            x3 += 2
+            x4 = mul(x4, 0x0101)
+            x1 = x1 ^ x3
+            x4 = x4 ^ x2
+            x3 = x3 ^ x4
+            t = x2
+            x2 = x1
+            x1 = mul(t, x1)
+            t = x3
+            x3 = x4
+            x4 = mul(t, x4)
+            x2 = x2 ^ x4
+            x1 = x1 ^ x3
+            x3 = x3 ^ x2
+            x4 = x4 ^ x1
+
+        return [mul(x1, 0x0101), x3 - 2, x2 - 1, mul(x4, 0x0101)]
+
+    message += b"\x80"
+    while len(message) % 8 != 0:
+        message += b"\x00"
+    blocks = [message[i:i+8] for i in range(0, len(message), 8)]
+    hash_value = [0]*4
+    for block in blocks:
+        block = [block[i]*256 + block[i+1] for i in range(0, 8, 2)]
+        hash_value = encrypt_block([a ^ b for a, b in zip(block, hash_value)])
+    return bytes(sum([[n//256, n%256] for n in hash_value], []))
+
+
+
+
+
+
+message = b'This is a message to be hashed'
+hash_value = IDEA_hash(message)
+print("Hash value: ", hash_value)
