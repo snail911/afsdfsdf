@@ -1,0 +1,29 @@
+import random
+
+# Define a prime number and a generator in the finite field
+p = 997
+g = 2
+
+# Define a private key for the signer
+private_key = random.randint(1, p-1)
+
+# Define a message to be signed
+message = "Hello, world!"
+
+# Define a random blinding factor
+r = random.randint(1, p-1)
+
+# Compute the blinded message
+blinded_message = (r * pow(g, hash(message), p)) % p
+
+# Compute the blinded signature
+blinded_signature = pow(g, r, p)
+
+# Unblind the signature
+signature = (blinded_signature * pow(private_key, -1, p)) % p
+
+# Verify the signature
+if pow(g, hash(message), p) == pow(signature, hash(blinded_message), p):
+    print("Signature is valid.")
+else:
+    print("Signature is invalid.")
