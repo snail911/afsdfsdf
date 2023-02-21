@@ -1,120 +1,158 @@
-def idea_encrypt(key, plaintext):
-    def mul(a, b):
-        if a == 0:
-            a = 0x10001 - b
-        elif b == 0:
-            a = 0x10001 - a
-        else:
-            t = a * b
-            b = t & 0xFFFF
-            a = (t >> 16) & 0xFFFF
-            a = (a - b) + (1 if a < b else 0)
-        return a & 0xFFFF
+def _mul(x, y):
+    if x == 0:
+        x = 0x10000
+    if y == 0:
+        y = 0x10000
 
-    def key_schedule(key):
-        key = key + b'\x00' * (16 - len(key))
-        key_words = [int.from_bytes(key[i:i + 2], 'big') for i in range(0, 16, 2)]
-        for i in range(8, 52):
-            if i % 8 == 0:
-                key_words = key_words[1:] + [key_words[0]]
-            elif i % 8 == 6:
-                key_words = key_words[:4] + key_words[5:] + [key_words[4]]
-            elif i % 8 == 7:
-                key_words = key_words[3:] + key_words[:3]
-            key_words.append((key_words[-8] ^ key_words[-5] ^ key_words[-3] ^ key_words[-1] ^ 0x9E37) & 0xFFFF)
-        return key_words
+    r = (x * y) % 0x10001
 
-    key_words = key_schedule(key)
-    plaintext = plaintext + b'\x00' * (-len(plaintext) % 16)
-    ciphertext = bytearray()
-    for i in range(0, len(plaintext), 16):
-        x = int.from_bytes(plaintext[i:i + 2], 'big')
-        y = int.from_bytes(plaintext[i + 2:i + 4], 'big')
-        z = int.from_bytes(plaintext[i + 4:i + 6], 'big')
-        w = int.from_bytes(plaintext[i + 6:i + 8], 'big')
-        for j in range(8):
-            x = mul(x, key_words[j * 6])
-            y = (y + key_words[j * 6 + 1]) & 0xFFFF
-            z = (z + key_words[j * 6 + 2]) & 0xFFFF
-            w = mul(w, key_words[j * 6 + 3])
-            t = mul(y ^ z, key_words[j * 6 + 4])
-            u = (t + mul(0xFFFF - x, key_words[j * 6 + 5])) & 0xFFFF
-            v = (t + u) & 0xFFFF
-            x = x ^ v
-            y = y ^ u
-            z = z ^ v
-            w = w ^ u
-            y, z = z, y
-        x = mul(x, key_words[48])
-        y = (y + key_words[49]) & 0xFFFF
-        z = (z + key_words[50]) & 0xFFFF
-        w = mul(w, key_words[51])
-        ciphertext += x.to_bytes(2, 'big') + y.to_bytes(2, 'big') + z.to_bytes(2, 'big') + w.to_bytes(2, 'big')
-    return ciphertext
-def idea_decrypt(key, ciphertext):
-    def mul(a, b):
-        if a == 0:
-            a = 0x10001 - b
-        elif b == 0:
-            a = 0x10001 - a
-        else:
-            t = a * b
-            b = t & 0xFFFF
-            a = (t >> 16) & 0xFFFF
-            a = (a - b) + (1 if a < b else 0)
-        return a & 0xFFFF
+    if r == 0x10000:
+        r = 0
 
-    def key_schedule(key):
-        key = key + b'\x00' * (16 - len(key))
-        key_words = [int.from_bytes(key[i:i+2], 'big') for i in range(0, 16, 2)]
-        for i in range(8, 52):
-            if i % 8 == 0:
-                key_words = key_words[1:] + [key_words[0]]
-            elif i % 8 == 6:
-                key_words = key_words[:4] + key_words[5:] + [key_words[4]]
-            elif i % 8 == 7:
-                key_words = key_words[3:] + key_words[:3]
-            key_words.append((key_words[-8] ^ key_words[-5] ^ key_words[-3] ^ key_words[-1] ^ 0x9E37) & 0xFFFF)
-        return key_words
-
-    key_words = key_schedule(key)
-    plaintext = bytearray()
-    for i in range(0, len(ciphertext), 16):
-        x = int.from_bytes(ciphertext[i:i+2], 'big')
-        y = int.from_bytes(ciphertext[i+2:i+4], 'big')
-        z = int.from_bytes(ciphertext[i+4:i+6], 'big')
-        w = int.from_bytes(ciphertext[i+6:i+8], 'big')
-        for j in range(8):
-            x = mul(x, key_words[51-j*6])
-            y = (y - key_words[50-j*6]) & 0xFFFF
-            z = (z - key_words[49-j*6]) & 0xFFFF
-            w = mul(w, key_words[48-j*6])
-            t = mul(y ^ z, key_words[47-j*6])
-            u = (t + mul(0xFFFF - x, key_words[46-j*6])) & 0xFFFF
-            v = (t + u) & 0xFFFF
-            x = x ^ v
-            y = y ^ u
-            z = z ^ v
-            w = w ^ u
-            y, z = z, y
-        x = mul(x, key_words[0])
-        y = (y - key_words[1]) & 0xFFFF
-        z = (z - key_words[2]) & 0xFFFF
-        w = mul(w, key_words[3])
-        plaintext += x.to_bytes(2, 'big') + y.to_bytes(2, 'big') + z.to_bytes(2, 'big') + w.to_bytes(2, 'big')
-    return plaintext.rstrip(b'\x00')
+    return r
 
 
+def _KA_layer(x1, x2, x3, x4, round_keys):
+    z1, z2, z3, z4 = round_keys[0:4]
+
+    y1 = _mul(x1, z1)
+    y2 = (x2 + z2) % 0x10000
+    y3 = (x3 + z3) % 0x10000
+    y4 = _mul(x4, z4)
+
+    return y1, y2, y3, y4
 
 
+def _MA_layer(y1, y2, y3, y4, round_keys):
+    z5, z6 = round_keys[4:6]
 
-key = b'\x01\x23\x45\x67\x89\xAB\xCD\xEF\x01\x23\x45\x67\x89\xAB\xCD\xEF'
-plaintext = b'Hello, world! This is a test message.'
+    p = y1 ^ y3
+    q = y2 ^ y4
 
-# encrypt the plaintext
-ciphertext = idea_encrypt(key, plaintext)
-print("Ciphertext:", ciphertext.hex())
+    s = _mul(p, z5)
+    t = _mul((q + s) % 0x10000, z6)
+    u = (s + t) % 0x10000
 
-# decrypt the ciphertext using the same key
-decrypted_text = idea_decrypt(ciphertext, key)
-print("Decrypted plaintext:", decrypted_text.hex())
+    x1 = y1 ^ t
+    x2 = y2 ^ u
+    x3 = y3 ^ t
+    x4 = y4 ^ u
+
+    return x1, x2, x3, x4
+
+
+def _inv_mul(x):
+    if x == 0:
+        return 0
+    else:
+        return pow(x, 0x10001 - 2, 0x10001)
+
+
+def _inv_KA_layer(y1, y2, y3, y4, round_keys):
+    z1, z2, z3, z4 = round_keys[0:4]
+
+    x1 = _inv_mul(y1)
+    x2 = (y2 - z2) % 0x10000
+    x3 = (y3 - z3) % 0x10000
+    x4 = _inv_mul(y4)
+
+    return x1, x2, x3, x4
+
+
+def _inv_MA_layer(x1, x2, x3, x4, round_keys):
+    z5, z6 = round_keys[4:6]
+
+    u = (x2 - x4) % 0x10000
+    t = _inv_mul((u + z6) % 0x10000)
+    s = _inv_mul((t - z5) % 0x10000)
+
+    y1 = x1 ^ t
+    y2 = x2 ^ s
+    y3 = x3 ^ t
+    y4 = x4 ^ s
+
+    return y1, y2, y3, y4
+
+
+class IDEA:
+    def __init__(self, key):
+        self._keys = None
+        self.change_key(key)
+
+    def change_key(self, key):
+
+        modulus = 1 << 128
+
+        sub_keys = []
+        for i in range(9 * 6):
+            sub_keys.append((key >> (112 - 16 * (i % 8))) % 0x10000)
+            if i % 8 == 7:
+                key = ((key << 25) | (key >> 103)) % modulus
+
+        keys = []
+        for i in range(9):
+            round_keys = sub_keys[6 * i: 6 * (i + 1)]
+            keys.append(tuple(round_keys))
+        self._keys = tuple(keys)
+
+    def encrypt(self, plaintext):
+
+        bin_str = ''.join(format(ord(c), '08b') for c in plaintext)
+        plaintext_int = int(bin_str, 2)
+
+        x1 = (plaintext_int >> 48) & 0xFFFF
+        x2 = (plaintext_int >> 32) & 0xFFFF
+        x3 = (plaintext_int >> 16) & 0xFFFF
+        x4 = plaintext_int & 0xFFFF
+
+        for i in range(8):
+            round_keys = self._keys[i]
+
+            y1, y2, y3, y4 = _KA_layer(x1, x2, x3, x4, round_keys)
+            x1, x2, x3, x4 = _MA_layer(y1, y2, y3, y4, round_keys)
+
+            x2, x3 = x3, x2
+
+        y1, y2, y3, y4 = _KA_layer(x1, x3, x2, x4, self._keys[8])
+
+        ciphertext = (y1 << 48) | (y2 << 32) | (y3 << 16) | y4
+        return ciphertext
+
+    def decrypt(self, ciphertext):
+
+        y1 = (ciphertext >> 48) & 0xFFFF
+        y2 = (ciphertext >> 32) & 0xFFFF
+        y3 = (ciphertext >> 16) & 0xFFFF
+        y4 = ciphertext & 0xFFFF
+
+        for i in range(8, 0, -1):
+            round_keys = self._keys[i]
+
+            x1, x2, x3, x4 = _inv_MA_layer(y1, y3, y2, y4, round_keys)
+            y1, y2, y3, y4 = _inv_KA_layer(x1, x2, x3, x4, round_keys)
+
+            x2, x3 = x3, x2
+
+        round_keys = self._keys[0]
+        x1, x2, x3, x4 = _inv_MA_layer(y1, y3, y2, y4, round_keys)
+
+        bin_str = "{0:b}".format((x1 << 48) | (x2 << 32) | (x3 << 16) | x4).zfill(128)
+        plaintext = ''.join(chr(int(bin_str[i:i + 8], 2)) for i in range(0, len(bin_str), 8))
+        return plaintext
+
+
+def main():
+    key = 0x2BD6459F82C5B300952C49104881FF48
+    plaintext = 'HELLO WORLD'
+
+    idea = IDEA(key)
+    ciphertext = idea.encrypt(plaintext)
+    ciphertext1 = 0x5A8D6E297900DFCB4A87D4B1F8C49A4D
+    decrypted_plaintext = idea.decrypt(ciphertext1)
+
+    print(hex(ciphertext))
+    print(decrypted_plaintext)
+
+
+if __name__ == '__main__':
+    main()
